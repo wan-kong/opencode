@@ -16,17 +16,24 @@ export const ServeCommand = cmd({
         type: "string",
         describe: "hostname to listen on",
         default: "127.0.0.1",
+      })
+      .option("cwd", {
+        alias: "c",
+        type: "string",
+        describe: "working directory",
+        default: process.cwd(),
       }),
   describe: "starts a headless opencode server",
   handler: async (args) => {
     const hostname = args.hostname
     const port = args.port
+    process.chdir(args.cwd)
     const server = Server.listen({
       port,
       hostname,
     })
     console.log(`opencode server listening on http://${server.hostname}:${server.port}`)
-    await new Promise(() => {})
+    await new Promise(() => { })
     server.stop()
   },
 })
