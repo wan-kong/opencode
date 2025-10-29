@@ -1,5 +1,5 @@
 import { Decimal } from "decimal.js"
-import z from "zod/v4"
+import z from "zod"
 import { type LanguageModelUsage, type ProviderMetadata } from "ai"
 
 import PROMPT_INITIALIZE from "../session/prompt/initialize.txt"
@@ -23,11 +23,17 @@ import { Snapshot } from "@/snapshot"
 export namespace Session {
   const log = Log.create({ service: "session" })
 
-  const parentSessionTitlePrefix = "New session - "
-  const childSessionTitlePrefix = "Child session - "
+  const parentTitlePrefix = "New session - "
+  const childTitlePrefix = "Child session - "
 
   function createDefaultTitle(isChild = false) {
-    return (isChild ? childSessionTitlePrefix : parentSessionTitlePrefix) + new Date().toISOString()
+    return (isChild ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString()
+  }
+
+  export function isDefaultTitle(title: string) {
+    return new RegExp(
+      `^(${parentTitlePrefix}|${childTitlePrefix})\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$`,
+    ).test(title)
   }
 
   export const Info = z
@@ -36,6 +42,11 @@ export namespace Session {
       projectID: z.string(),
       directory: z.string(),
       parentID: Identifier.schema("session").optional(),
+      summary: z
+        .object({
+          diffs: Snapshot.FileDiff.array(),
+        })
+        .optional(),
       share: z
         .object({
           url: z.string(),
@@ -73,6 +84,12 @@ export namespace Session {
   export type ShareInfo = z.output<typeof ShareInfo>
 
   export const Event = {
+    Created: Bus.event(
+      "session.created",
+      z.object({
+        info: Info,
+      }),
+    ),
     Updated: Bus.event(
       "session.updated",
       z.object({
@@ -162,6 +179,9 @@ export namespace Session {
     }
     log.info("created", result)
     await Storage.write(["session", Instance.project.id, result.id], result)
+    Bus.publish(Event.Created, {
+      info: result,
+    })
     const cfg = await Config.get()
     if (!result.parentID && (Flag.OPENCODE_AUTO_SHARE || cfg.share === "auto"))
       share(result.id)
@@ -335,10 +355,25 @@ export namespace Session {
     },
   )
 
-  export const updatePart = fn(MessageV2.Part, async (part) => {
+  const UpdatePartInput = z.union([
+    MessageV2.Part,
+    z.object({
+      part: MessageV2.TextPart,
+      delta: z.string(),
+    }),
+    z.object({
+      part: MessageV2.ReasoningPart,
+      delta: z.string(),
+    }),
+  ])
+
+  export const updatePart = fn(UpdatePartInput, async (input) => {
+    const part = "delta" in input ? input.part : input
+    const delta = "delta" in input ? input.delta : undefined
     await Storage.write(["part", part.messageID, part.id], part)
     Bus.publish(MessageV2.Event.PartUpdated, {
       part,
+      delta,
     })
     return part
   })
@@ -404,49 +439,6 @@ export namespace Session {
         ],
       })
       await Project.setInitialized(Instance.project.id)
-    },
-  )
-
-  export const diff = fn(
-    z.object({
-      sessionID: Identifier.schema("session"),
-      messageID: Identifier.schema("message").optional(),
-    }),
-    async (input) => {
-      const all = await messages(input.sessionID)
-      const index = !input.messageID ? 0 : all.findIndex((x) => x.info.id === input.messageID)
-      if (index === -1) return []
-
-      let from: string | undefined
-      let to: string | undefined
-
-      // scan assistant messages to find earliest from and latest to
-      // snapshot
-      for (let i = index + 1; i < all.length; i++) {
-        const item = all[i]
-
-        // if messageID is provided, stop at the next user message
-        if (input.messageID && item.info.role === "user") break
-
-        if (!from) {
-          for (const part of item.parts) {
-            if (part.type === "step-start" && part.snapshot) {
-              from = part.snapshot
-              break
-            }
-          }
-        }
-
-        for (const part of item.parts) {
-          if (part.type === "step-finish" && part.snapshot) {
-            to = part.snapshot
-            break
-          }
-        }
-      }
-
-      if (from && to) return Snapshot.diffFull(from, to)
-      return []
     },
   )
 }
