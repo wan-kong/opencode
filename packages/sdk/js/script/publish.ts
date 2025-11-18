@@ -15,6 +15,7 @@ for (const [key, value] of Object.entries(pkg.exports)) {
   /// @ts-expect-error
   pkg.exports[key] = {
     import: file + ".js",
+    require: file + ".js",
     types: file + ".d.ts",
   }
 }
